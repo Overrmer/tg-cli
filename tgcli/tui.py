@@ -5,9 +5,8 @@ from pathlib import Path
 
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.widgets import Header, Footer, ListView, ListItem, Label, Input, Static, LoadingIndicator
+from textual.widgets import Header, Footer, ListView, ListItem, Label, Input, Static
 from textual.binding import Binding
-from textual.message import Message as TextualMessage
 
 from telethon import TelegramClient, events
 from telethon.tl.types import User, Chat, Channel, Message as TelethonMsg
@@ -79,27 +78,26 @@ class TelegramTUI(App):
     CSS = """
     Screen {
         layout: horizontal;
-        background: $surface;
     }
 
     #sidebar {
         width: 38;
         height: 100%;
-        border-right: heavy $accent;
-        background: $surface-darken-1;
+        border-right: heavy cyan;
+        background: #181825;
     }
 
     #sidebar-title {
         text-align: center;
-        background: $accent;
-        color: $text;
+        background: cyan;
+        color: black;
         text-style: bold;
         padding: 1;
     }
 
     #chat-search {
         margin: 1 1 0 1;
-        border: tall $accent-darken-2;
+        border: tall cyan;
     }
 
     #chat-list {
@@ -109,16 +107,16 @@ class TelegramTUI(App):
 
     ChatListItem {
         padding: 1;
-        border-bottom: solid $surface-darken-2;
+        border-bottom: solid #313244;
     }
 
     ChatListItem:hover {
-        background: $surface-lighten-1;
+        background: #313244;
     }
 
     ChatListItem.-selected {
-        background: $accent-darken-2;
-        color: $text;
+        background: cyan;
+        color: black;
     }
 
     .chat-item-header {
@@ -126,64 +124,57 @@ class TelegramTUI(App):
     }
 
     .chat-item-preview {
-        color: $text-muted;
+        color: #a6adc8;
     }
 
     #chat-pane {
         width: 1fr;
         height: 100%;
-        background: $surface;
+        background: #11111b;
     }
 
     #chat-header {
         height: 3;
-        background: $surface-darken-2;
-        color: $accent-lighten-2;
+        background: #181825;
+        color: cyan;
         text-style: bold;
         padding: 1 2;
-        border-bottom: solid $accent;
+        border-bottom: solid cyan;
     }
 
     #messages-container {
         height: 1fr;
         padding: 1 2;
-        scrollbar-gutter: stable;
     }
 
     .message-bubble {
         margin-bottom: 1;
-        padding: 1 2;
-        max-width: 90%;
-        border-radius: 1;
+        padding: 0 1;
+        max-width: 85%;
     }
 
     .bubble-out {
-        background: $primary-darken-2;
-        border: solid green;
-        margin-left: 10%;
+        background: #1b3820;
+        border: round green;
+        margin-left: 6;
     }
 
     .bubble-in {
-        background: $surface-darken-1;
-        border: solid $accent-darken-2;
-        margin-right: 10%;
+        background: #181825;
+        border: round cyan;
+        margin-right: 6;
     }
 
     #input-container {
         height: 4;
-        background: $surface-darken-2;
+        background: #181825;
         padding: 0 1;
-        border-top: solid $accent;
+        border-top: solid cyan;
     }
 
     #message-input {
         width: 100%;
-        border: tall $accent;
-    }
-
-    #status-loading {
-        align: center middle;
-        height: 100%;
+        border: tall cyan;
     }
     """
 
