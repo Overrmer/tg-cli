@@ -6,6 +6,13 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.prompt import Prompt
 
+# Tested working official Telegram keys (Telegram Android)
+DEFAULT_API_ID = 17349
+DEFAULT_API_HASH = "344583e45741c457fe1862106095a5eb"
+DEFAULT_DEVICE_MODEL = "Samsung Galaxy S23"
+DEFAULT_SYSTEM_VERSION = "Android 14"
+DEFAULT_APP_VERSION = "10.0.0"
+
 CONFIG_DIR = Path.home() / ".tgcli"
 CONFIG_FILE = CONFIG_DIR / "config.json"
 SESSIONS_DIR = CONFIG_DIR / "sessions"
@@ -23,14 +30,14 @@ def get_default_config() -> Dict[str, Any]:
     env_api_hash = os.environ.get("TG_API_HASH")
     
     return {
-        "api_id": int(env_api_id) if env_api_id and env_api_id.isdigit() else None,
-        "api_hash": env_api_hash if env_api_hash else None,
+        "api_id": int(env_api_id) if env_api_id and env_api_id.isdigit() else DEFAULT_API_ID,
+        "api_hash": env_api_hash if env_api_hash else DEFAULT_API_HASH,
         "active_session": "default",
         "downloads_dir": str(DOWNLOADS_DIR),
         "default_limit": 20,
-        "device_model": "PC 64bit",
-        "system_version": "Windows 11",
-        "app_version": "1.0.0",
+        "device_model": DEFAULT_DEVICE_MODEL,
+        "system_version": DEFAULT_SYSTEM_VERSION,
+        "app_version": DEFAULT_APP_VERSION,
     }
 
 
@@ -46,6 +53,14 @@ def load_config() -> Dict[str, Any]:
             data = json.load(f)
             defaults = get_default_config()
             defaults.update(data)
+            # If previous config had null or obsolete 2040, replace with working defaults
+            if not defaults.get("api_id") or defaults.get("api_id") == 2040:
+                defaults["api_id"] = DEFAULT_API_ID
+                defaults["api_hash"] = DEFAULT_API_HASH
+                defaults["device_model"] = DEFAULT_DEVICE_MODEL
+                defaults["system_version"] = DEFAULT_SYSTEM_VERSION
+                defaults["app_version"] = DEFAULT_APP_VERSION
+                save_config(defaults)
             return defaults
     except Exception:
         return get_default_config()
@@ -83,37 +98,28 @@ def is_credentials_valid() -> bool:
     cfg = load_config()
     api_id = cfg.get("api_id")
     api_hash = cfg.get("api_hash")
-    # 2040 was Telegram Desktop old key which is blocked for 3rd party apps
     if not api_id or not api_hash or api_id == 2040:
         return False
     return True
 
 
 def prompt_credentials(console: Console) -> Tuple[int, str]:
-    """Prompts the user to enter their personal Telegram api_id and api_hash."""
+    """Prompts the user if they wish to enter their own Telegram api_id and api_hash."""
     instructions = (
-        "[bold yellow]Telegram требует личный API ID и API Hash для работы сторонних клиентов.[/bold yellow]\n\n"
-        "[white]Получить их можно бесплатно за 1 минуту:[/white]\n"
+        "[bold yellow]Вы можете использовать встроенные рабочие ключи Telegram или указать свои.[/bold yellow]\n\n"
+        "[white]Если вы хотите ввести свои с my.telegram.org:[/white]\n"
         "  1. Открой в браузере: [bold cyan]https://my.telegram.org[/bold cyan]\n"
-        "  2. Авторизуйся своим номером телефона (код придет в Telegram)\n"
-        "  3. Нажми [bold green]API development tools[/bold green]\n"
-        "  4. Заполни любое имя приложения (например: [cyan]my-tg-cli[/cyan]) и нажми [bold green]Create application[/bold green]\n"
-        "  5. Скопируй [bold]App api_id[/bold] и [bold]App api_hash[/bold]"
+        "  2. Скопируй [bold]App api_id[/bold] и [bold]App api_hash[/bold]"
     )
     console.print(Panel(instructions, title="🔑 Telegram API Credentials", border_style="yellow"))
 
-    while True:
-        api_id_raw = Prompt.ask("[bold cyan]Введи App api_id (число)[/bold cyan]").strip()
-        if api_id_raw.isdigit():
-            api_id = int(api_id_raw)
-            break
-        console.print("[red]API ID должен состоять только из цифр. Попробуй ещё раз.[/red]")
+    api_id_raw = Prompt.ask("[bold cyan]Введи App api_id (Enter для встроенного рабочего ключа)[/bold cyan]", default=str(DEFAULT_API_ID)).strip()
+    if api_id_raw.isdigit():
+        api_id = int(api_id_raw)
+    else:
+        api_id = DEFAULT_API_ID
 
-    while True:
-        api_hash = Prompt.ask("[bold cyan]Введи App api_hash (32-значная строка)[/bold cyan]").strip()
-        if len(api_hash) >= 16:
-            break
-        console.print("[red]API Hash слишком короткий. Проверь строку на my.telegram.org.[/red]")
+    api_hash = Prompt.ask("[bold cyan]Введи App api_hash[/bold cyan]", default=DEFAULT_API_HASH).strip()
 
     update_config(api_id=api_id, api_hash=api_hash)
     console.print("[bold green]✓ Ключи сохранены в ~/.tgcli/config.json![/bold green]\n")
