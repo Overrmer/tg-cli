@@ -6,12 +6,13 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.prompt import Prompt
 
-# Tested working official Telegram keys (Telegram Android)
-DEFAULT_API_ID = 17349
-DEFAULT_API_HASH = "344583e45741c457fe1862106095a5eb"
-DEFAULT_DEVICE_MODEL = "Samsung Galaxy S23"
-DEFAULT_SYSTEM_VERSION = "Android 14"
-DEFAULT_APP_VERSION = "10.0.0"
+# Tested working official Telegram keys (Telegram macOS Swift client)
+# Allows both SendCodeRequest (phone login) and QR login without API_ID_PUBLISHED_FLOOD
+DEFAULT_API_ID = 2834
+DEFAULT_API_HASH = "68875f756c9b437a8b916ca3de215815"
+DEFAULT_DEVICE_MODEL = "MacBook Pro"
+DEFAULT_SYSTEM_VERSION = "macOS 14.5"
+DEFAULT_APP_VERSION = "10.12.0"
 
 CONFIG_DIR = Path.home() / ".tgcli"
 CONFIG_FILE = CONFIG_DIR / "config.json"
@@ -53,8 +54,8 @@ def load_config() -> Dict[str, Any]:
             data = json.load(f)
             defaults = get_default_config()
             defaults.update(data)
-            # If previous config had null or obsolete 2040, replace with working defaults
-            if not defaults.get("api_id") or defaults.get("api_id") == 2040:
+            # If previous config had outdated, blocked or null keys, replace with working defaults
+            if not defaults.get("api_id") or defaults.get("api_id") in (2040, 17349):
                 defaults["api_id"] = DEFAULT_API_ID
                 defaults["api_hash"] = DEFAULT_API_HASH
                 defaults["device_model"] = DEFAULT_DEVICE_MODEL
