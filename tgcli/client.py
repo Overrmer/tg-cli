@@ -10,9 +10,10 @@ from telethon.errors import (
     PhoneCodeInvalidError,
     PasswordHashInvalidError,
     FloodWaitError,
+    ApiIdInvalidError,
 )
 
-from .config import load_config, get_session_path
+from .config import load_config, get_session_path, is_credentials_valid
 
 # Suppress telethon debug logs unless verbose
 logging.getLogger("telethon").setLevel(logging.WARNING)
@@ -24,14 +25,20 @@ def get_client(
     api_hash: Optional[str] = None,
 ) -> TelegramClient:
     cfg = load_config()
-    final_api_id = int(api_id or cfg.get("api_id"))
-    final_api_hash = str(api_hash or cfg.get("api_hash"))
+    final_api_id = api_id or cfg.get("api_id")
+    final_api_hash = api_hash or cfg.get("api_hash")
+
+    if not final_api_id or not final_api_hash:
+        raise ValueError(
+            "API ID / API Hash не настроены. Пожалуйста, запустите `tg login` или `tg config --api-id <ID> --api-hash <HASH>`."
+        )
+
     session_path = get_session_path(session_name or cfg.get("active_session", "default"))
 
     client = TelegramClient(
         session_path,
-        api_id=final_api_id,
-        api_hash=final_api_hash,
+        api_id=int(final_api_id),
+        api_hash=str(final_api_hash),
         device_model=cfg.get("device_model", "PC 64bit"),
         system_version=cfg.get("system_version", "Windows 11"),
         app_version=cfg.get("app_version", "1.0.0"),

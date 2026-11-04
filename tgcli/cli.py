@@ -9,9 +9,17 @@ from rich.prompt import Prompt
 
 from telethon import events
 from telethon.tl.types import User, Chat, Channel
+from telethon.errors import ApiIdInvalidError
 
 from . import __version__, __app_name__
-from .config import load_config, update_config, get_session_path, SESSIONS_DIR
+from .config import (
+    load_config,
+    update_config,
+    get_session_path,
+    SESSIONS_DIR,
+    is_credentials_valid,
+    prompt_credentials,
+)
 from .client import get_client, resolve_peer, get_peer_title
 from .auth import do_qr_login, do_phone_login, do_bot_login, do_logout
 from .formatters import (
@@ -23,10 +31,11 @@ from .formatters import (
 )
 from .utils import download_message_media, upload_file_with_progress, read_stdin_if_available
 from .interactive import run_interactive_chat
+from .tui import TelegramTUI
 
 app = typer.Typer(
     name="tg",
-    help="⚡ Modern, blazing-fast Telegram CLI client for terminals, scripting and automation.",
+    help="⚡ Modern, blazing-fast Telegram CLI & TUI client for terminals, scripting and automation.",
     add_completion=True,
     no_args_is_help=True,
 )
@@ -34,18 +43,34 @@ console = Console()
 
 
 def run_async(coro):
-    """Utility to run an async coroutine synchronously."""
+    """Utility to run an async coroutine synchronously with clean error handling."""
     try:
         return asyncio.run(coro)
     except KeyboardInterrupt:
-        console.print("\n[yellow]Operation cancelled by user.[/yellow]")
+        console.print("\n[yellow]Операция прервана пользователем.[/yellow]")
         sys.exit(0)
+    except ApiIdInvalidError:
+        console.print("\n[bold red]❌ Ошибка: Telegram отклонил api_id и api_hash (API_ID_INVALID).[/bold red]")
+        console.print("[yellow]Telegram строго запрещает использование устаревших или публичных ключей.[/yellow]")
+        console.print("Получите бесплатный личный API ID и Hash на [bold cyan]https://my.telegram.org[/bold cyan] и задайте их:")
+        console.print("  [cyan]tg config --api-id <ID> --api-hash <HASH>[/cyan]\n")
+        sys.exit(1)
+    except (ConnectionError, OSError) as e:
+        console.print(f"\n[bold red]❌ Ошибка соединения с Telegram:[/bold red] {e}")
+        console.print("[dim](Обычно возникает при сбросе сессии или недействительных API credentials)[/dim]\n")
+        sys.exit(1)
 
 
 async def check_auth_or_exit(client) -> User:
-    await client.connect()
+    try:
+        await client.connect()
+    except ApiIdInvalidError:
+        console.print("\n[bold red]❌ Ошибка: Неверный api_id / api_hash.[/bold red]")
+        console.print("Обновите ключи: [cyan]tg config --api-id <ID> --api-hash <HASH>[/cyan]\n")
+        sys.exit(1)
+
     if not await client.is_user_authorized():
-        console.print("[bold red]Not logged in![/bold red] Please run [bold cyan]tg login[/bold cyan] first.")
+        console.print("[bold red]Вы не авторизованы![/bold red] Сначала выполните [bold cyan]tg login[/bold cyan].")
         await client.disconnect()
         sys.exit(1)
     return await client.get_me()
@@ -53,29 +78,37 @@ async def check_auth_or_exit(client) -> User:
 
 @app.command(name="login")
 def login(
-    qr: bool = typer.Option(False, "--qr", help="Log in by scanning a QR code with your Telegram mobile app."),
-    phone: Optional[str] = typer.Option(None, "--phone", "-p", help="Phone number with country code (e.g. +79991234567)."),
-    bot_token: Optional[str] = typer.Option(None, "--bot-token", "-b", help="Log in as a Telegram Bot using its Bot Token."),
-    api_id: Optional[int] = typer.Option(None, "--api-id", help="Custom Telegram API ID from my.telegram.org"),
-    api_hash: Optional[str] = typer.Option(None, "--api-hash", help="Custom Telegram API Hash from my.telegram.org"),
-    session: Optional[str] = typer.Option(None, "--session", "-s", help="Session name (default: 'default')"),
+    qr: bool = typer.Option(False, "--qr", help="Войти через сканирование QR-кода камерой телефона."),
+    phone: Optional[str] = typer.Option(None, "--phone", "-p", help="Номер телефона с кодом страны (напр. +79991234567)."),
+    bot_token: Optional[str] = typer.Option(None, "--bot-token", "-b", help="Войти как Telegram Bot по Bot Token."),
+    api_id: Optional[int] = typer.Option(None, "--api-id", help="Собственный Telegram API ID с my.telegram.org"),
+    api_hash: Optional[str] = typer.Option(None, "--api-hash", help="Собственный Telegram API Hash с my.telegram.org"),
+    session: Optional[str] = typer.Option(None, "--session", "-s", help="Имя сессии (по умолчанию 'default')"),
 ):
     """
-    Authenticate your Telegram account or bot.
-    Supports QR code login (default recommended), SMS/Telegram code, or Bot Token.
+    Авторизация в Telegram (по QR-коду, телефону с 2FA или Bot Token).
     """
     if api_id or api_hash:
         update_config(api_id=api_id, api_hash=api_hash)
     if session:
         update_config(active_session=session)
 
+    # If credentials are not valid/configured, guide the user
+    if not is_credentials_valid():
+        api_id, api_hash = prompt_credentials(console)
+
     async def _login():
         client = get_client(session_name=session, api_id=api_id, api_hash=api_hash)
-        await client.connect()
+        try:
+            await client.connect()
+        except ApiIdInvalidError:
+            console.print("\n[bold red]❌ Ошибка: Введенные api_id / api_hash отклонены сервером Telegram.[/bold red]")
+            console.print("Проверьте правильность на https://my.telegram.org и обновите: [cyan]tg config --api-id <ID> --api-hash <HASH>[/cyan]\n")
+            return
 
         if await client.is_user_authorized():
             me = await client.get_me()
-            console.print(f"[bold green]Already logged in as {me.first_name} (@{me.username})[/bold green]")
+            console.print(f"[bold green]Вы уже авторизованы как {me.first_name} (@{me.username})[/bold green]")
             await client.disconnect()
             return
 
@@ -88,32 +121,53 @@ def login(
             success = await do_qr_login(client, console)
         else:
             # Interactive choice
-            console.print("[bold cyan]Choose Telegram login method:[/bold cyan]")
-            console.print("  [1] QR Code (Fastest & easiest, scan with phone)")
-            console.print("  [2] Phone number (Receive code in Telegram or SMS)")
-            console.print("  [3] Bot Token (Run as a Telegram bot)")
-            choice = Prompt.ask("Select option", choices=["1", "2", "3"], default="1")
+            console.print("[bold cyan]Выберите способ входа в Telegram:[/bold cyan]")
+            console.print("  [1] QR-код (Быстрее всего — отсканировать камерой в приложении)")
+            console.print("  [2] По номеру телефона (Код придет в Telegram или SMS)")
+            console.print("  [3] Bot Token (Войти как бот)")
+            choice = Prompt.ask("Выбор", choices=["1", "2", "3"], default="1")
             
             if choice == "1":
                 success = await do_qr_login(client, console)
             elif choice == "2":
                 success = await do_phone_login(client, console)
             elif choice == "3":
-                token = Prompt.ask("Enter Bot Token")
+                token = Prompt.ask("Введи Bot Token")
                 success = await do_bot_login(client, console, token)
 
         await client.disconnect()
         if success:
-            console.print("\n[bold green]✨ Authentication complete! Run [cyan]tg me[/cyan] or [cyan]tg chats[/cyan] to get started.[/bold green]")
+            console.print("\n[bold green]✨ Авторизация успешна! Запустите [cyan]tg tui[/cyan] для полноэкранного интерфейса или [cyan]tg chats[/cyan].[/bold green]")
 
     run_async(_login())
 
 
+@app.command(name="tui")
+def tui_cmd(
+    session: Optional[str] = typer.Option(None, "--session", "-s", help="Имя сессии."),
+):
+    """
+    🖥️ Запустить полноэкранный графический терминальный интерфейс (TUI) с сайдбаром чатов и лентой сообщений.
+    """
+    if not is_credentials_valid():
+        console.print("[bold red]Ключи API не настроены.[/bold red] Сначала запустите [cyan]tg login[/cyan].")
+        sys.exit(1)
+
+    async def _tui():
+        client = get_client(session_name=session)
+        await check_auth_or_exit(client)
+        app_tui = TelegramTUI(client)
+        await app_tui.run_async()
+        await client.disconnect()
+
+    run_async(_tui())
+
+
 @app.command(name="logout")
 def logout(
-    session: Optional[str] = typer.Option(None, "--session", "-s", help="Session name to log out."),
+    session: Optional[str] = typer.Option(None, "--session", "-s", help="Имя сессии для выхода."),
 ):
-    """Log out and remove stored session files."""
+    """Выйти из аккаунта и удалить сохраненные файлы сессии."""
     async def _logout():
         client = get_client(session_name=session)
         await client.connect()
@@ -125,10 +179,10 @@ def logout(
 
 @app.command(name="me")
 def me(
-    json_output: bool = typer.Option(False, "--json", help="Output information as JSON."),
-    session: Optional[str] = typer.Option(None, "--session", "-s", help="Session name."),
+    json_output: bool = typer.Option(False, "--json", help="Вывод в формате JSON."),
+    session: Optional[str] = typer.Option(None, "--session", "-s", help="Имя сессии."),
 ):
-    """Display information about the currently authenticated user/bot."""
+    """Информация о текущем авторизованном пользователе или боте."""
     async def _me():
         client = get_client(session_name=session)
         user = await check_auth_or_exit(client)
@@ -143,16 +197,16 @@ def me(
 
 @app.command(name="chats")
 def chats(
-    limit: int = typer.Option(20, "--limit", "-n", help="Number of chats to display."),
-    unread_only: bool = typer.Option(False, "--unread", "-u", help="Only show chats with unread messages."),
+    limit: int = typer.Option(20, "--limit", "-n", help="Количество чатов для отображения."),
+    unread_only: bool = typer.Option(False, "--unread", "-u", help="Показывать только чаты с непрочитанными."),
     filter_type: Optional[str] = typer.Option(
-        None, "--type", "-t", help="Filter by type: user, group, channel, bot."
+        None, "--type", "-t", help="Фильтр по типу: user, group, channel, bot."
     ),
-    search_query: Optional[str] = typer.Option(None, "--search", "-q", help="Filter chats by title/username query."),
-    json_output: bool = typer.Option(False, "--json", help="Output dialogs as JSON."),
-    session: Optional[str] = typer.Option(None, "--session", "-s", help="Session name."),
+    search_query: Optional[str] = typer.Option(None, "--search", "-q", help="Поиск по названию или @username."),
+    json_output: bool = typer.Option(False, "--json", help="Вывод в формате JSON."),
+    session: Optional[str] = typer.Option(None, "--session", "-s", help="Имя сессии."),
 ):
-    """List recent chats, groups, channels and bots with unread counts."""
+    """Список последних чатов, групп и каналов с бейджами непрочитанных."""
     async def _chats():
         client = get_client(session_name=session)
         await check_auth_or_exit(client)
@@ -204,13 +258,13 @@ def chats(
 
 @app.command(name="read")
 def read(
-    peer: str = typer.Argument(..., help="Peer identifier: username (@user), phone (+...), ID, or 'me'."),
-    limit: int = typer.Option(20, "--limit", "-n", help="Number of messages to retrieve."),
-    reverse: bool = typer.Option(True, "--reverse/--no-reverse", help="Show oldest messages first (chronological order)."),
-    json_output: bool = typer.Option(False, "--json", help="Output messages as JSON."),
-    session: Optional[str] = typer.Option(None, "--session", "-s", help="Session name."),
+    peer: str = typer.Argument(..., help="Кому/Откуда: юзернейм (@user), телефон (+...), ID или 'me'."),
+    limit: int = typer.Option(20, "--limit", "-n", help="Количество сообщений."),
+    reverse: bool = typer.Option(True, "--reverse/--no-reverse", help="Хронологический порядок (старые сверху)."),
+    json_output: bool = typer.Option(False, "--json", help="Вывод в формате JSON."),
+    session: Optional[str] = typer.Option(None, "--session", "-s", help="Имя сессии."),
 ):
-    """Read message history from a chat, group, channel, or Saved Messages."""
+    """Прочитать историю сообщений из чата, канала или Избранного."""
     async def _read():
         client = get_client(session_name=session)
         await check_auth_or_exit(client)
@@ -218,7 +272,7 @@ def read(
         try:
             entity = await resolve_peer(client, peer)
         except Exception as e:
-            console.print(f"[bold red]Error resolving peer '{peer}':[/bold red] {e}")
+            console.print(f"[bold red]Ошибка поиска '{peer}':[/bold red] {e}")
             await client.disconnect()
             sys.exit(1)
 
@@ -232,7 +286,7 @@ def read(
             out = [serialize_message(m, chat_title=chat_title) for m in messages]
             console.print(json.dumps(out, indent=2, ensure_ascii=False))
         else:
-            console.print(f"[bold magenta]📖 History for {chat_title} ({len(messages)} messages):[/bold magenta]\n")
+            console.print(f"[bold magenta]📖 История диалога {chat_title} ({len(messages)} сообщений):[/bold magenta]\n")
             for m in messages:
                 print_message_line(m, console, show_chat=False)
 
@@ -243,24 +297,22 @@ def read(
 
 @app.command(name="send")
 def send(
-    peer: str = typer.Argument(..., help="Recipient: username (@user), phone (+...), chat ID, or 'me'."),
-    message: Optional[str] = typer.Argument(None, help="Text message to send. If '-' or omitted, reads from stdin."),
-    reply_to: Optional[int] = typer.Option(None, "--reply-to", "-r", help="Message ID to reply to."),
-    silent: bool = typer.Option(False, "--silent", help="Send silently without notifying recipient."),
-    json_output: bool = typer.Option(False, "--json", help="Output sent message details as JSON."),
-    session: Optional[str] = typer.Option(None, "--session", "-s", help="Session name."),
+    peer: str = typer.Argument(..., help="Получатель: юзернейм (@user), телефон, ID или 'me'."),
+    message: Optional[str] = typer.Argument(None, help="Текст сообщения (или передать через конвейер pipe)."),
+    reply_to: Optional[int] = typer.Option(None, "--reply-to", "-r", help="ID сообщения для ответа."),
+    silent: bool = typer.Option(False, "--silent", help="Отправить без звукового уведомления."),
+    json_output: bool = typer.Option(False, "--json", help="Вывод информации в JSON."),
+    session: Optional[str] = typer.Option(None, "--session", "-s", help="Имя сессии."),
 ):
     """
-    Send a text message to a user, group, channel or Saved Messages.
-    Supports stdin piping: `echo "Hello" | tg send me`
+    Отправить текстовое сообщение (поддерживает pipe: `echo "Готово" | tg send me`).
     """
-    # Check if text comes from stdin
     if not message or message == "-":
         stdin_text = read_stdin_if_available()
         if stdin_text:
             message = stdin_text
         elif not message:
-            console.print("[bold red]Error: No message provided and standard input is empty.[/bold red]")
+            console.print("[bold red]Ошибка: Текст сообщения не указан и stdin пуст.[/bold red]")
             sys.exit(1)
 
     async def _send():
@@ -270,7 +322,7 @@ def send(
         try:
             entity = await resolve_peer(client, peer)
         except Exception as e:
-            console.print(f"[bold red]Error resolving peer '{peer}':[/bold red] {e}")
+            console.print(f"[bold red]Ошибка поиска получателя '{peer}':[/bold red] {e}")
             await client.disconnect()
             sys.exit(1)
 
@@ -280,7 +332,7 @@ def send(
         if json_output:
             console.print(json.dumps(serialize_message(msg, chat_title=chat_title), indent=2, ensure_ascii=False))
         else:
-            console.print(f"[bold green]✓ Message sent to {chat_title} (ID: #{msg.id})[/bold green]")
+            console.print(f"[bold green]✓ Отправлено в {chat_title} (ID сообщения: #{msg.id})[/bold green]")
 
         await client.disconnect()
 
@@ -289,13 +341,13 @@ def send(
 
 @app.command(name="send-file")
 def send_file(
-    peer: str = typer.Argument(..., help="Recipient: username, ID, or 'me'."),
-    file_path: str = typer.Argument(..., help="Path to the file, image, video or document."),
-    caption: str = typer.Option("", "--caption", "-c", help="Optional text caption for the file."),
-    as_document: bool = typer.Option(False, "--doc", help="Force sending as document without compression."),
-    session: Optional[str] = typer.Option(None, "--session", "-s", help="Session name."),
+    peer: str = typer.Argument(..., help="Получатель: юзернейм, ID или 'me'."),
+    file_path: str = typer.Argument(..., help="Путь к файлу, картинке, видео или документу."),
+    caption: str = typer.Option("", "--caption", "-c", help="Текстовая подпись к файлу."),
+    as_document: bool = typer.Option(False, "--doc", help="Отправить как документ без сжатия."),
+    session: Optional[str] = typer.Option(None, "--session", "-s", help="Имя сессии."),
 ):
-    """Upload and send a file, image, audio, or document to Telegram."""
+    """Загрузить и отправить файл с индикатором прогресса."""
     async def _send_file():
         client = get_client(session_name=session)
         await check_auth_or_exit(client)
@@ -303,7 +355,7 @@ def send_file(
         try:
             entity = await resolve_peer(client, peer)
         except Exception as e:
-            console.print(f"[bold red]Error resolving peer '{peer}':[/bold red] {e}")
+            console.print(f"[bold red]Ошибка поиска получателя '{peer}':[/bold red] {e}")
             await client.disconnect()
             sys.exit(1)
 
@@ -312,9 +364,9 @@ def send_file(
             msg = await upload_file_with_progress(
                 client, entity, file_path, caption=caption, as_document=as_document, console=console
             )
-            console.print(f"[bold green]✓ Successfully uploaded {file_path} to {chat_title} (ID: #{msg.id})[/bold green]")
+            console.print(f"[bold green]✓ Файл {file_path} успешно отправлен в {chat_title} (ID: #{msg.id})[/bold green]")
         except Exception as e:
-            console.print(f"[bold red]Upload failed:[/bold red] {e}")
+            console.print(f"[bold red]Ошибка отправки файла:[/bold red] {e}")
 
         await client.disconnect()
 
@@ -323,12 +375,12 @@ def send_file(
 
 @app.command(name="download")
 def download(
-    peer: str = typer.Argument(..., help="Peer containing the message."),
-    message_id: int = typer.Argument(..., help="Message ID containing media/file."),
-    out: Optional[str] = typer.Option(None, "--out", "-o", help="Output file path or directory."),
-    session: Optional[str] = typer.Option(None, "--session", "-s", help="Session name."),
+    peer: str = typer.Argument(..., help="Чат/канал с сообщением."),
+    message_id: int = typer.Argument(..., help="ID сообщения с файлом/медиа."),
+    out: Optional[str] = typer.Option(None, "--out", "-o", help="Путь для сохранения (папка или имя файла)."),
+    session: Optional[str] = typer.Option(None, "--session", "-s", help="Имя сессии."),
 ):
-    """Download photos, documents, audio or video attachments from a message."""
+    """Скачать фото, документ, аудио или видео из сообщения."""
     async def _download():
         client = get_client(session_name=session)
         await check_auth_or_exit(client)
@@ -336,21 +388,21 @@ def download(
         try:
             entity = await resolve_peer(client, peer)
         except Exception as e:
-            console.print(f"[bold red]Error resolving peer '{peer}':[/bold red] {e}")
+            console.print(f"[bold red]Ошибка поиска '{peer}':[/bold red] {e}")
             await client.disconnect()
             sys.exit(1)
 
         msg = await client.get_messages(entity, ids=message_id)
         if not msg:
-            console.print(f"[bold red]Message #{message_id} not found.[/bold red]")
+            console.print(f"[bold red]Сообщение #{message_id} не найдено.[/bold red]")
             await client.disconnect()
             sys.exit(1)
 
         try:
             saved_path = await download_message_media(client, msg, output_path=out, console=console)
-            console.print(f"[bold green]✓ Downloaded to: {saved_path}[/bold green]")
+            console.print(f"[bold green]✓ Файл сохранен в: {saved_path}[/bold green]")
         except Exception as e:
-            console.print(f"[bold red]Download failed:[/bold red] {e}")
+            console.print(f"[bold red]Ошибка скачивания:[/bold red] {e}")
 
         await client.disconnect()
 
@@ -359,31 +411,30 @@ def download(
 
 @app.command(name="stream")
 def stream(
-    peer: Optional[str] = typer.Option(None, "--peer", "-p", help="Optional specific peer to watch."),
-    json_output: bool = typer.Option(False, "--json", help="Output live events as raw JSON lines."),
-    session: Optional[str] = typer.Option(None, "--session", "-s", help="Session name."),
+    peer: Optional[str] = typer.Option(None, "--peer", "-p", help="Фильтр по конкретному чату."),
+    json_output: bool = typer.Option(False, "--json", help="Выводить поток сырым JSON."),
+    session: Optional[str] = typer.Option(None, "--session", "-s", help="Имя сессии."),
 ):
     """
-    Live stream/tail incoming messages in real-time (like `tail -f`).
-    Watches all chats or a specific chat.
+    Живой стриминг входящих сообщений в реальном времени (как `tail -f`).
     """
     async def _stream():
         client = get_client(session_name=session)
         await check_auth_or_exit(client)
 
         filter_chat = None
-        filter_title = "All Chats"
+        filter_title = "Все чаты"
         if peer:
             try:
                 filter_chat = await resolve_peer(client, peer)
                 filter_title = get_peer_title(filter_chat)
             except Exception as e:
-                console.print(f"[bold red]Error resolving peer '{peer}':[/bold red] {e}")
+                console.print(f"[bold red]Ошибка поиска '{peer}':[/bold red] {e}")
                 await client.disconnect()
                 sys.exit(1)
 
         if not json_output:
-            console.print(f"[bold cyan]⚡ Live streaming incoming messages from [yellow]{filter_title}[/yellow] (Ctrl+C to stop)...[/bold cyan]\n")
+            console.print(f"[bold cyan]⚡ Стриминг входящих сообщений из [yellow]{filter_title}[/yellow] (Ctrl+C для выхода)...[/bold cyan]\n")
 
         chat_cache = {}
 
@@ -404,7 +455,7 @@ def stream(
         try:
             await client.run_until_disconnected()
         except KeyboardInterrupt:
-            console.print("\n[yellow]Stream stopped.[/yellow]")
+            console.print("\n[yellow]Стриминг остановлен.[/yellow]")
         finally:
             await client.disconnect()
 
@@ -413,10 +464,10 @@ def stream(
 
 @app.command(name="chat")
 def chat(
-    peer: str = typer.Argument(..., help="Peer identifier to open chat session with: username, phone, ID, or 'me'."),
-    session: Optional[str] = typer.Option(None, "--session", "-s", help="Session name."),
+    peer: str = typer.Argument(..., help="Собеседник: юзернейм, телефон, ID или 'me'."),
+    session: Optional[str] = typer.Option(None, "--session", "-s", help="Имя сессии."),
 ):
-    """Launch full-duplex interactive terminal chat session with a user or group."""
+    """Быстрый консольный интерактивный чат с одним пользователем или группой."""
     async def _chat():
         client = get_client(session_name=session)
         await check_auth_or_exit(client)
@@ -428,13 +479,13 @@ def chat(
 
 @app.command(name="search")
 def search(
-    query: str = typer.Argument(..., help="Search query string."),
-    peer: Optional[str] = typer.Option(None, "--peer", "-p", help="Search only within this peer/chat."),
-    limit: int = typer.Option(20, "--limit", "-n", help="Max results to return."),
-    json_output: bool = typer.Option(False, "--json", help="Output results as JSON."),
-    session: Optional[str] = typer.Option(None, "--session", "-s", help="Session name."),
+    query: str = typer.Argument(..., help="Текст для поиска."),
+    peer: Optional[str] = typer.Option(None, "--peer", "-p", help="Искать только внутри этого чата."),
+    limit: int = typer.Option(20, "--limit", "-n", help="Максимум результатов."),
+    json_output: bool = typer.Option(False, "--json", help="Вывод в формате JSON."),
+    session: Optional[str] = typer.Option(None, "--session", "-s", help="Имя сессии."),
 ):
-    """Search messages by keyword globally or inside a specific chat."""
+    """Поиск сообщений по ключевому слову глобально или внутри чата."""
     async def _search():
         client = get_client(session_name=session)
         await check_auth_or_exit(client)
@@ -444,7 +495,7 @@ def search(
             try:
                 entity = await resolve_peer(client, peer)
             except Exception as e:
-                console.print(f"[bold red]Error resolving peer '{peer}':[/bold red] {e}")
+                console.print(f"[bold red]Ошибка поиска '{peer}':[/bold red] {e}")
                 await client.disconnect()
                 sys.exit(1)
 
@@ -456,7 +507,7 @@ def search(
             out = [serialize_message(m) for m in results]
             console.print(json.dumps(out, indent=2, ensure_ascii=False))
         else:
-            console.print(f"[bold cyan]🔍 Found {len(results)} messages matching '{query}':[/bold cyan]\n")
+            console.print(f"[bold cyan]🔍 Найдено {len(results)} сообщений по запросу '{query}':[/bold cyan]\n")
             for m in results:
                 print_message_line(m, console, show_chat=True)
 
@@ -467,12 +518,12 @@ def search(
 
 @app.command(name="config")
 def config_cmd(
-    api_id: Optional[int] = typer.Option(None, "--api-id", help="Set Telegram API ID."),
-    api_hash: Optional[str] = typer.Option(None, "--api-hash", help="Set Telegram API Hash."),
-    session: Optional[str] = typer.Option(None, "--session", "-s", help="Set active session name."),
-    downloads_dir: Optional[str] = typer.Option(None, "--downloads-dir", help="Set default downloads folder."),
+    api_id: Optional[int] = typer.Option(None, "--api-id", help="Задать Telegram API ID (с my.telegram.org)."),
+    api_hash: Optional[str] = typer.Option(None, "--api-hash", help="Задать Telegram API Hash (с my.telegram.org)."),
+    session: Optional[str] = typer.Option(None, "--session", "-s", help="Активная сессия."),
+    downloads_dir: Optional[str] = typer.Option(None, "--downloads-dir", help="Папка для скачиваний."),
 ):
-    """View or update configuration settings."""
+    """Просмотр или изменение настроек (API ID, API Hash, папки)."""
     if any([api_id, api_hash, session, downloads_dir]):
         cfg = update_config(
             api_id=api_id,
@@ -480,25 +531,24 @@ def config_cmd(
             active_session=session,
             downloads_dir=downloads_dir,
         )
-        console.print("[bold green]✓ Configuration updated successfully![/bold green]")
+        console.print("[bold green]✓ Настройки успешно сохранены![/bold green]")
     else:
         cfg = load_config()
 
-    # Display configuration
-    console.print("\n[bold cyan]Current TG-CLI Configuration:[/bold cyan]")
-    masked_hash = cfg.get("api_hash", "")
+    console.print("\n[bold cyan]Текущая конфигурация TG-CLI:[/bold cyan]")
+    masked_hash = cfg.get("api_hash", "") or ""
     if len(masked_hash) > 8:
         masked_hash = masked_hash[:4] + "..." + masked_hash[-4:]
-    console.print(f"  [bold]API ID:[/bold] {cfg.get('api_id')}")
-    console.print(f"  [bold]API Hash:[/bold] {masked_hash}")
-    console.print(f"  [bold]Active Session:[/bold] {cfg.get('active_session')}")
-    console.print(f"  [bold]Downloads Dir:[/bold] {cfg.get('downloads_dir')}")
-    console.print(f"  [bold]Sessions Folder:[/bold] {SESSIONS_DIR}\n")
+    console.print(f"  [bold]API ID:[/bold] {cfg.get('api_id') or '[red]Не задан (требуется с my.telegram.org)[/red]'}")
+    console.print(f"  [bold]API Hash:[/bold] {masked_hash or '[red]Не задан[/red]'}")
+    console.print(f"  [bold]Активная сессия:[/bold] {cfg.get('active_session')}")
+    console.print(f"  [bold]Папка скачиваний:[/bold] {cfg.get('downloads_dir')}")
+    console.print(f"  [bold]Хранилище сессий:[/bold] {SESSIONS_DIR}\n")
 
 
 @app.command(name="version")
 def version():
-    """Show version information."""
+    """Показать версию."""
     console.print(f"[bold cyan]{__app_name__}[/bold cyan] version [bold green]{__version__}[/bold green]")
 
 
